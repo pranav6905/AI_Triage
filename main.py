@@ -1,46 +1,69 @@
 from fastapi import FastAPI
 from models import (
+    NextQuestionsRequest, NextQuestionsResponse,
     TriageRequest, TriageResponse, AIExtraction, 
     BatchRescoreRequest, BatchRescoreResponse, RescoreResult
 )
-from ai_service import extract_clinical_data
+from ai_service import extract_clinical_data, generate_next_questions
 from scoring_engine import calculate_priority, calculate_rescore
 
-app = FastAPI(title="JEEVA Triage AI - HF Serverless")
+app = FastAPI(title="JEEVA Dynamic Triage AI (Gemini Edition)")
+
+@app.post("/api/v1/chat/next-questions", response_model=NextQuestionsResponse)
+async def get_next_questions(request: NextQuestionsRequest):
+    """
+    Endpoint 1: During the chat loop. 
+    Frontend sends the history so far, AI returns the next 1-2 questions to ask.
+    """
+    questions = generate_next_questions(request.conversation_history)
+    return NextQuestionsResponse(questions=questions)
 
 @app.post("/api/v1/analyze-triage", response_model=TriageResponse)
 async def analyze_triage(request: TriageRequest):
+    """
+    Endpoint 2: End of the chat loop.
+    Frontend sends the FULL chat history + available departments + context + vitals.
+    """
     try:
-        # Phase 1 & 2: LLM Extraction via Hugging Face
-        ai_data = extract_clinical_data(request.raw_text)
+        # Pass both the history AND the dynamic available departments to the AI
+        ai_data = extract_clinical_data(
+            history=request.conversation_history, 
+            available_departments=request.available_departments
+        )
         
-        # Phase 3 & 4: Python Scoring Math & Explainability
-        risk_score, urgency_level, explainability = calculate_priority(ai_data, request.vitals)
+        # Phase 1, 3, 4, & Math Evaluation
+        risk_score, urgency_level, explainability = calculate_priority(
+            extraction=ai_data, 
+            context=request.context, 
+            vitals=request.vitals
+        )
         
-        # Phase 5: Final Aggregation
         return TriageResponse(
             patient_id=request.patient_id,
             risk_score=risk_score,
             urgency_level=urgency_level,
-            department=ai_data.department,
+            department=ai_data.department, 
             explainability_summary=explainability,
             ai_analysis=ai_data
         )
         
     except Exception as e:
-        # THE FALLBACK: If HF API times out or Llama hallucinates bad JSON
+        # THE FALLBACK: If API times out or hallucinates
         fallback_data = AIExtraction(
-            chief_complaint=request.raw_text,
-            extracted_symptoms=["Parse Failed"],
-            underlying_conditions=[],
+            chief_complaint="Failed to parse conversation",
+            extracted_symptoms=[],
+            detected_red_flags=[],
+            severity="moderate",
+            symptom_category="general",
+            onset_type="gradual",
             department="General"
         )
         return TriageResponse(
             patient_id=request.patient_id,
-            risk_score=50, # Safe middle-ground score
-            urgency_level="Pending Manual Triage",
+            risk_score=50,
+            urgency_level="Moderate",
             department="General",
-            explainability_summary=f"AI Engine offline or failed. Awaiting human review. Error log: {str(e)}",
+            explainability_summary=f"AI Engine offline or failed. Error log: {str(e)}",
             ai_analysis=fallback_data
         )
 
@@ -53,15 +76,19 @@ async def rescore_batch_patients(request: BatchRescoreRequest):
     updated_results = []
     
     for patient in request.patients:
-        # Calculate the new score using your existing scoring_engine math
-        new_score = calculate_rescore(patient.current_score, patient.wait_time_minutes)
+        # Now using the strictly standardized names: risk_score and urgency_level
+        new_score, new_urgency = calculate_rescore(
+            patient.risk_score, 
+            patient.wait_time_minutes,
+            patient.urgency_level
+        )
         
-        # Append the result to our list
         updated_results.append(
             RescoreResult(
                 patient_id=patient.patient_id,
-                updated_risk_score=new_score,
-                message=f"Score bumped to {new_score} (+ {patient.wait_time_minutes} mins waited)"
+                risk_score=new_score,
+                urgency_level=new_urgency,
+                message=f"Score bumped to {new_score} (+ wait time rules)"
             )
         )
         
