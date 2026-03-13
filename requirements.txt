@@ -5,3 +5,5 @@ google-generativeai
 python-multipart
 twilio
 python-dotenv
+google-cloud-vision
+PyMuPDF
