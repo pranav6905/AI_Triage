@@ -143,7 +143,8 @@ async def analyze_triage(
             severity="moderate",
             symptom_category="general",
             onset_type="gradual",
-            department="General"
+            department="General",
+            extracted_comorbidities=[]
         )
         return TriageResponse(
             patient_id=request.patient_id,

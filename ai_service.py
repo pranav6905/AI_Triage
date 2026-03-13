@@ -55,6 +55,7 @@ Extract the following:
 5. symptom_category: e.g., "cardiac", "neurological", "respiratory", "gastrointestinal", "orthopedic", "general".
 6. onset_type: strictly "sudden", "gradual", or "chronic".
 7. department: Choose strictly from the following available hospital departments: {available_departments}. If none fit perfectly, choose the closest match or the general department.
+8. extracted_comorbidities: Array of chronic conditions or previous diagnoses explicitly found in the Historical Medical Context (e.g., ["diabetes", "hypertension", "asthma"]). If none, output [].
 
 OUTPUT EXACTLY IN THIS JSON FORMAT:
 {{
@@ -64,7 +65,8 @@ OUTPUT EXACTLY IN THIS JSON FORMAT:
   "severity": "string",
   "symptom_category": "string",
   "onset_type": "string",
-  "department": "string"
+  "department": "string",
+  "extracted_comorbidities": ["string"]
 }}"""
 
 def format_history(history: List[Message]) -> str:

@@ -37,11 +37,16 @@ def calculate_priority(extraction: AIExtraction, context: PatientContext, vitals
             p3_score += 10
             explanations.append("Moderate-risk age (+10)")
     
-    for comorb in context.comorbidities:
+    # COMBINE frontend context with the OCR-extracted comorbidities
+    all_comorbidities = context.comorbidities + extraction.extracted_comorbidities
+    
+    for comorb in all_comorbidities:
         c = comorb.lower()
         if "diabetes" in c: p3_score += 10
         if "hypertension" in c or "bp" in c: p3_score += 8
         if "heart" in c or "cardiac" in c: p3_score += 25
+        if "asthma" in c or "copd" in c: p3_score += 15
+        
     if p3_score > 0:
         explanations.append(f"Comorbidities factor (+{min(p3_score, 40)})")
     p3_score = min(p3_score, 40)

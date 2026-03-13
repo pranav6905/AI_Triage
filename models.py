@@ -44,6 +44,7 @@ class AIExtraction(BaseModel):
     symptom_category: str                 
     onset_type: str                       
     department: str
+    extracted_comorbidities: List[str] = []
 
 # --- OUTGOING RESPONSE (Endpoint 2) ---
 class TriageResponse(BaseModel):
