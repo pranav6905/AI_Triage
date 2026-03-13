@@ -1,4 +1,6 @@
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
+import json
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from google.cloud import vision
 import fitz
 from models import (
@@ -28,20 +30,94 @@ async def get_next_questions(request: NextQuestionsRequest):
     return NextQuestionsResponse(questions=questions)
 
 @app.post("/api/v1/analyze-triage", response_model=TriageResponse)
-async def analyze_triage(request: TriageRequest):
+@app.post("/api/v1/analyze-triage", response_model=TriageResponse)
+async def analyze_triage(
+    payload: str = Form(..., description="""
+    **EXPECTED JSON STRUCTURE (Pass as a stringified JSON):**
+    ```json
+    {
+      "patient_id": "string",
+      "conversation_history": [
+        {"role": "assistant", "content": "string"},
+        {"role": "user", "content": "string"}
+      ],
+      "available_departments": ["Cardiology", "Neurology"],
+      "context": {
+        "is_conscious": true,
+        "breathing_difficulty": "normal",
+        "age": 0,
+        "comorbidities": ["string"],
+        "recent_trauma_or_surgery": false
+      },
+      "vitals": {
+        "heart_rate": 0,
+        "blood_pressure": "120/80",
+        "temperature": 0,
+        "o2_sat": 0,
+        "respiratory_rate": 0
+      }
+    }
+    ```
+    """), 
+    file: UploadFile = File(None, description="Optional: Upload a PDF or Image of medical records")
+):
     """
-    Endpoint 2: End of the chat loop.
-    Frontend sends the FULL chat history + available departments + context + vitals.
+    MULTI-AGENT ENDPOINT:
+    Agent 1 (Optional): OCR extracts text from PDF/Image & summarizes history.
+    Agent 2: Analyzes conversation + Agent 1's summary to calculate risk scores.
     """
+    # Parse the incoming JSON string payload into our Pydantic model
     try:
-        # Pass both the history AND the dynamic available departments to the AI
+        request_data = json.loads(payload)
+        request = TriageRequest(**request_data)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Invalid JSON payload: {str(e)}")
+
+    # ==========================================
+    # AGENT 1: Document Extraction & Summarization
+    # ==========================================
+    if file and vision_client:
+        try:
+            content = await file.read()
+            full_raw_text = ""
+            
+            # Extract PDF
+            if file.filename.lower().endswith(".pdf"):
+                doc = fitz.open(stream=content, filetype="pdf")
+                for page_num in range(len(doc)):
+                    page = doc.load_page(page_num)
+                    pix = page.get_pixmap(dpi=150) 
+                    image = vision.Image(content=pix.tobytes("png"))
+                    response = vision_client.document_text_detection(image=image)
+                    if not response.error.message:
+                        full_raw_text += response.full_text_annotation.text + "\n\n"
+            # Extract Image
+            else:
+                image = vision.Image(content=content)
+                response = vision_client.document_text_detection(image=image)
+                if not response.error.message:
+                    full_raw_text = response.full_text_annotation.text
+
+            # If text was found, let Gemini (Agent 1) summarize it
+            if full_raw_text.strip():
+                summary = summarize_ocr_text(full_raw_text)
+                # Inject Agent 1's summary directly into the patient context for Agent 2
+                request.context.historical_summary = summary
+                
+        except Exception as e:
+            print(f"Warning: Agent 1 (OCR/Summary) failed. Proceeding without document. Error: {e}")
+
+    # ==========================================
+    # AGENT 2: Triage & Scoring Engine
+    # ==========================================
+    try:
+        # Agent 2 now receives the chat history AND Agent 1's summary
         ai_data = extract_clinical_data(
             history=request.conversation_history, 
             available_departments=request.available_departments,
             historical_summary=request.context.historical_summary
         )
         
-        # Phase 1, 3, 4, & Math Evaluation
         risk_score, urgency_level, explainability = calculate_priority(
             extraction=ai_data, 
             context=request.context, 
@@ -54,11 +130,12 @@ async def analyze_triage(request: TriageRequest):
             urgency_level=urgency_level,
             department=ai_data.department, 
             explainability_summary=explainability,
+            historical_summary=request.context.historical_summary,
             ai_analysis=ai_data
         )
         
     except Exception as e:
-        # THE FALLBACK: If API times out or hallucinates
+        # THE FALLBACK
         fallback_data = AIExtraction(
             chief_complaint="Failed to parse conversation",
             extracted_symptoms=[],
@@ -74,6 +151,7 @@ async def analyze_triage(request: TriageRequest):
             urgency_level="Moderate",
             department="General",
             explainability_summary=f"AI Engine offline or failed. Error log: {str(e)}",
+            historical_summary=request.context.historical_summary if hasattr(request, 'context') else None,
             ai_analysis=fallback_data
         )
 
@@ -104,56 +182,3 @@ async def rescore_batch_patients(request: BatchRescoreRequest):
         
     return BatchRescoreResponse(results=updated_results)
 
-@app.post("/api/v1/upload-case-file")
-async def upload_case_file(
-    patient_id: str = Form(...), 
-    file: UploadFile = File(...)
-):
-    """Receives an image OR a PDF, extracts text via Google Vision, and summarizes via Gemini."""
-    if not vision_client:
-        raise HTTPException(status_code=500, detail="OCR engine is not configured properly.")
-
-    try:
-        content = await file.read()
-        full_raw_text = "" # We will store text from ALL pages here
-        
-        if file.filename.lower().endswith(".pdf"):
-            doc = fitz.open(stream=content, filetype="pdf")
-            
-            # LOOP THROUGH EVERY PAGE IN THE PDF
-            for page_num in range(len(doc)):
-                page = doc.load_page(page_num)
-                pix = page.get_pixmap(dpi=150) 
-                image_content = pix.tobytes("png")
-                
-                # Send this specific page to Google Vision
-                image = vision.Image(content=image_content)
-                response = vision_client.document_text_detection(image=image)
-                
-                if response.error.message:
-                    print(f"Vision API Warning on page {page_num}: {response.error.message}")
-                    continue # Skip broken pages but keep processing the rest
-                    
-                # Add this page's text to our master string
-                full_raw_text += response.full_text_annotation.text + "\n\n"
-                
-        else:
-            # It's a standard image (jpg, png)
-            image = vision.Image(content=content)
-            response = vision_client.document_text_detection(image=image)
-            if response.error.message:
-                raise Exception(f"Google Vision API Error: {response.error.message}")
-            full_raw_text = response.full_text_annotation.text
-
-        # Now pass the massive combined string to Gemini to clean up
-        clean_summary = summarize_ocr_text(full_raw_text)
-        
-        return {
-            "status": "success",
-            "patient_id": patient_id,
-            "message": f"Successfully digitized {len(doc) if file.filename.lower().endswith('.pdf') else 1} page(s).",
-            "historical_summary": clean_summary
-        }
-        
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to process file: {str(e)}")

@@ -52,6 +52,7 @@ class TriageResponse(BaseModel):
     urgency_level: str 
     department: str
     explainability_summary: str
+    historical_summary: Optional[str] = None
     ai_analysis: AIExtraction
 
 # --- BATCH RESCORE (Endpoint 3) ---
