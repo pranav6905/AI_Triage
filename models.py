@@ -26,6 +26,7 @@ class PatientContext(BaseModel):
     age: Optional[int] = None
     comorbidities: List[str] = []         # e.g., ["diabetes", "hypertension"]
     recent_trauma_or_surgery: bool = False
+    historical_summary: Optional[str] = None
 
 class TriageRequest(BaseModel):
     patient_id: str

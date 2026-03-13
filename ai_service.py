@@ -26,16 +26,32 @@ OUTPUT EXACTLY IN THIS JSON FORMAT:
   "questions": ["Question 1?", "Question 2?"]
 }"""
 
+# --- UPDATED PROMPT: Strict Plain-Text Multilingual OCR Summarization ---
+OCR_SUMMARY_PROMPT = """You are a multilingual clinical data assistant. You are given raw, messy text extracted from a patient's medical document via OCR. 
+
+CRITICAL INSTRUCTIONS:
+1. The text may be in English, Hindi, Gujarati, Marathi, or any other language. Understand the context and translate it into ENGLISH.
+2. Extract ONLY the relevant medical history, previous diagnoses, chronic conditions, and current medications.
+3. Ignore hospital addresses, phone numbers, page numbers, and irrelevant administrative text.
+
+STRICT FORMATTING RULES:
+- DO NOT use any Markdown formatting (no asterisks *, no bolding, no bullet points).
+- DO NOT use line breaks or newline characters (\n). Output a single, continuous paragraph.
+- DO NOT state the language of the original document.
+- DO NOT use introductory labels like "Medical Summary:" or "The document is...". Just output the facts.
+
+If no useful medical history is found, output exactly: "No significant medical history found in document."
+"""
+
 # --- PROMPT 2: Final Data Extraction (DYNAMIC TEMPLATE) ---
 # Notice the double {{ }} for JSON to prevent Python string format errors
-EXTRACTION_PROMPT_TEMPLATE = """You are an expert clinical data extraction AI. Read the entire triage conversation history between the patient and the assistant.
+EXTRACTION_PROMPT_TEMPLATE = """You are an expert clinical data extraction AI. Read the entire triage conversation history between the patient and the assistant AND the patient's historical medical context (if provided).
 Your ONLY job is to extract medical entities from this conversation and output raw, valid JSON.
 
 Extract the following:
 1. chief_complaint: A short summary of the main issue.
 2. extracted_symptoms: Array of specific symptoms mentioned by the patient.
-3. detected_red_flags: Array of critical life-threatening indicators (e.g., "chest pain", "shortness of breath", "stroke signs", "severe bleeding"). If none, output [].
-4. severity: strictly "mild", "moderate", or "severe" based on their answers.
+3. detected_red_flags: Array of critical life-threatening indicators (e.g., "chest pain", "shortness of breath"). Include any severe risks found in their historical context if relevant to the current complaint. If none, output [].
 5. symptom_category: e.g., "cardiac", "neurological", "respiratory", "gastrointestinal", "orthopedic", "general".
 6. onset_type: strictly "sudden", "gradual", or "chronic".
 7. department: Choose strictly from the following available hospital departments: {available_departments}. If none fit perfectly, choose the closest match or the general department.
@@ -77,15 +93,19 @@ def generate_next_questions(history: List[Message]) -> List[str]:
     except:
         return ["Could you describe your symptoms a bit more?"]
 
-def extract_clinical_data(history: List[Message], available_departments: List[str]) -> AIExtraction:
+def extract_clinical_data(history: List[Message], available_departments: List[str], historical_summary: str = None) -> AIExtraction:
     """Extracts structured data and assigns a department based ONLY on the provided list."""
     transcript = format_history(history)
     
     # Inject the frontend's dynamic departments into the prompt
     departments_str = ", ".join(available_departments)
     formatted_prompt = EXTRACTION_PROMPT_TEMPLATE.format(available_departments=departments_str)
+
+    # NEW: Format the history block
+    history_block = f"Historical Medical Context:\n{historical_summary}\n\n" if historical_summary else "Historical Medical Context:\nNone provided.\n\n"
     
-    full_prompt = f"{formatted_prompt}\n\nConversation to extract from:\n{transcript}"
+    # NEW: Inject it into the full prompt
+    full_prompt = f"{formatted_prompt}\n\n{history_block}Conversation to extract from:\n{transcript}"
     
     response = model.generate_content(
         full_prompt,
@@ -97,3 +117,9 @@ def extract_clinical_data(history: List[Message], available_departments: List[st
     
     parsed_json = json.loads(response.text)
     return AIExtraction(**parsed_json)
+
+def summarize_ocr_text(raw_text: str) -> str:
+    """Passes raw OCR garbage to Gemini to clean up into a neat medical history."""
+    full_prompt = f"{OCR_SUMMARY_PROMPT}\n\nRaw OCR Text:\n{raw_text}"
+    response = model.generate_content(full_prompt, generation_config=genai.GenerationConfig(temperature=0.1))
+    return response.text.strip()

@@ -3,3 +3,6 @@ uvicorn
 pydantic
 google-generativeai
 python-dotenv
+google-cloud-vision
+python-multipart
+PyMuPDF
