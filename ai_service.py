@@ -74,7 +74,7 @@ def format_history(history: List[Message]) -> str:
         transcript += f"{msg.role.upper()}: {msg.content}\n"
     return transcript
 
-def generate_next_questions(history: List[Message]) -> List[str]:
+def generate_next_questions(history: List[Message], patient_language="English") -> List[str]:
     """Generates the next logical questions based on the chat so far."""
     transcript = format_history(history)
     full_prompt = f"{QUESTION_PROMPT}\n\nConversation so far:\n{transcript}"
